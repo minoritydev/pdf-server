@@ -15,8 +15,8 @@ async fn not_found() -> impl Responder {
 
 
 async fn download_pdf(state: web::Data<AppState>, filename: web::Path<String>) -> impl Responder {
-    # this is stored in oracle vault, need to figure out a way to retrieve
-    ## ask me for this string for nows
+    // this is stored in oracle vault, need to figure out a way to retrieve
+    // ask me for this string for nows
     let par_string = "" 
     let s3_url = format!("https://objectstorage.eu-amsterdam-1.oraclecloud.com/p/{}/n/axazr4elhg0l/b/pdfstore/o/{}", par_string,filename);
     let client = state.client.lock().await;
