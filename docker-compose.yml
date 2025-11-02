@@ -1,0 +1,14 @@
+version: "3.9"
+
+services:
+  pdf-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pdf-server
+    env_file:
+      - .env
+    ports:
+      - "${APP_PORT}:${APP_PORT}" 
+    restart: unless-stopped
+    command: ["./pdf-server", "--port", "${APP_PORT}"]
