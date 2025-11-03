@@ -1,11 +1,10 @@
-use actix_web::{web, App, HttpResponse, HttpServer, Responder};
+use actix_web::{web, App, HttpResponse, HttpServer, Responder, middleware::Logger};
 use reqwest::{Client, header::{HeaderName as ReqwestHeaderName, HeaderMap as reqwestHeaderMap, HeaderValue}};
-use http::{Request, request::Parts, Method, HeaderMap as httpHeaderMap};
-use std::sync::Arc;
-use tokio::sync::Mutex;
 use std::time::Duration;
 use clap::Parser;
 use reqsign::oracle;
+use bytes::Bytes;
+use log::{info, error};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -16,10 +15,10 @@ struct Args {
 
 #[derive(Clone)]
 struct AppState {
-    client: Arc<Mutex<Client>>,
+    client: Client,
 }
 
-async fn signer(url: &str) -> Result<reqwestHeaderMap,  Box<dyn std::error::Error>>{
+async fn send_signed_request(client: &Client, url: &str) -> Result<Bytes,  Box<dyn std::error::Error>>{
     let signer = oracle::default_signer();
     let mut req = http::Request::builder()
         .method(http::Method::GET)
@@ -31,94 +30,78 @@ async fn signer(url: &str) -> Result<reqwestHeaderMap,  Box<dyn std::error::Erro
     signer.sign(&mut req, None).await?;
     let mut reqwest_headers = reqwestHeaderMap::new();
     for (name, value) in req.headers.iter() {
-        let name: ReqwestHeaderName = ReqwestHeaderName::from_bytes(name.as_str().as_bytes())
-            .expect("invalid header name");
-        let value: HeaderValue = HeaderValue::from_bytes(value.as_bytes()).expect("invalid header value");
-        reqwest_headers.insert(
-            name,
-            value,
-        );
+        let name: ReqwestHeaderName = ReqwestHeaderName::from_bytes(name.as_str().as_bytes())?;
+        let value: HeaderValue = HeaderValue::from_bytes(value.as_bytes())?;
+        reqwest_headers.insert(name,value,);
     }
-    Ok(reqwest_headers)
+    info!("Sending signed request to {}", url);
+    let response = client.get(url).headers(reqwest_headers).send().await?.error_for_status()?;
+    let bytes = response.bytes().await?;  
+    info!("Received response from {}", url);
+    Ok(bytes)
 }
 
-
 async fn not_found() -> impl Responder {
+     info!("404 - route not found");
     HttpResponse::NotFound().body("404 - Route not found")
 }
 
-
 async fn download_pdf(state: web::Data<AppState>, filename: web::Path<String>) -> impl Responder {
-    let client = state.client.lock().await;
-    let par_string_secret_url = "https://secrets.eu-amsterdam-1.oci.oraclecloud.com/20190301/secrets/ocid1.vaultsecret.oc1.eu-amsterdam-1.amaaaaaajdltdoaame2fqdui3j545ze22ka5z6zknzm7hi5x3odsw7p2dvla/content";
-    let signed_headers = match signer(&par_string_secret_url).await {
-    Ok(parts) => parts,
-    Err(e) => {
-        eprintln!("Failed to sign request: {:?}", e);
-        return HttpResponse::InternalServerError().body("Signing OCI request failed.");
-    }
-    };
-    println!("{:#?}", signed_headers);
-    let response = match client.get(par_string_secret_url).headers(signed_headers).send().await {
-        Ok(resp) => resp,
-        Err(e) => {
-            log::error!("Failed to fetch signed URL: {}", e);
-            return HttpResponse::InternalServerError().body("Failed to fetch signed URL");
-        }
-    };
-    
-    let par_string = match response.text().await {
-        Ok(text) => text,
-        Err(e) => {
-            log::error!("Failed to read response text: {}", e);
-            return HttpResponse::InternalServerError().body("Failed to read signed URL response");
-        }
-    };
-    println!("{:#?}", par_string);
-    let s3_url = format!("https://objectstorage.eu-amsterdam-1.oraclecloud.com/p/{}/n/axazr4elhg0l/b/pdfstore/o/{}", par_string,filename);
-
-    match client.get(&s3_url).send().await {
-        Ok(response) => {
-            if response.status().is_success() {
-                let body = response.bytes().await.unwrap();
-
-                HttpResponse::Ok()
-                    .content_type("application/pdf")
-                    .body(body)
-            } else {
-                let body = response.bytes().await.unwrap();
-                HttpResponse::InternalServerError().body(body)
-            }
+    let client = &state.client;
+    let s3_url = format!("https://objectstorage.eu-amsterdam-1.oraclecloud.com/n/axazr4elhg0l/b/pdfstore/o/{}",filename);
+    info!("Request received: /download/{}", filename);
+    match send_signed_request(&client, &s3_url).await {
+        Ok(bytes) =>{ 
+            info!("Successfully downloaded PDF: {}", filename);
+            HttpResponse::Ok()
+            .content_type("application/pdf")
+            .body(bytes)
         }
         Err(e) => {
-            log::error!("Error fetching PDF: {}", e);
-            HttpResponse::InternalServerError().body("Error fetching PDF")
+            error!("Error downloading PDF {}: {}", filename, e);
+            HttpResponse::InternalServerError().body("Failed to download PDF")
         }
     }
 }
 async fn list_pdfs(state: web::Data<AppState>) -> impl Responder {
-    let client = state.client.lock().await;
-
-    let s3_url = "https://objectstorage.eu-amsterdam-1.oraclecloud.com/p/M-p0M8GoAk7_M5Gp4_-j_KBWyPQ6gt1rXPapl0MKWzo5h4Ms9UWBaBRaF3bgPOHf/n/axazr4elhg0l/b/pdfstore/o";
-    let response = client.get(s3_url).send().await.unwrap();
-    let body = response.text().await.unwrap();
-    HttpResponse::Ok().body(body)
+    let client = &state.client;
+    let s3_url = "https://objectstorage.eu-amsterdam-1.oraclecloud.com/n/axazr4elhg0l/b/pdfstore/o";
+      info!("Request received: /list");
+    match send_signed_request(&client, &s3_url).await {
+        Ok(bytes) => { 
+            info!("Successfully listed PDFs");
+            HttpResponse::Ok()
+            .content_type("application/json")
+            .body(bytes)
+        }
+        Err(e) => {
+             error!("Error listing PDFs: {}", e);
+            HttpResponse::InternalServerError().body("Failed to list PDFs")
+        }
+    }
 }
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     env_logger::init();
-    
     let args = Args::parse();
     let client = Client::new();
     let addr = format!("0.0.0.0:{}", args.port);
-    println!("pdf-server running on {}", addr );
+   info!("pdf-server running on {}", addr);
     let shared_state = web::Data::new(AppState {
-        client: Arc::new(Mutex::new(client)),
+        client,
     });
 
     HttpServer::new(move || {
         App::new()
+            .wrap(
+                Logger::new("%a \"%r\" %s %b bytes %Dms")
+                            // %a = remote IP
+            // %r = first line of the request (method + path + protocol)
+            // %s = response status
+            // %b = response size in bytes
+            // %D = time to serve request in ms
+            )
             .app_data(shared_state.clone())
             .route("/download/{filename}", web::get().to(download_pdf))
             .route("/list", web::get().to(list_pdfs))
