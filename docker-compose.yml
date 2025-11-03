@@ -5,6 +5,8 @@ services:
       dockerfile: Dockerfile
     image: pdf-server:latest
     container_name: pdf-server
+    volumes:
+      - ./oci-key.pem:/app/oci-key.pem:ro
     env_file:
       - .env
     environment:
