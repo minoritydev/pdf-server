@@ -5,8 +5,13 @@
 # Cargo package backups
 Cargo.lock
 
+.env
+*.key
+*.key.pub
+*.pem
 # (Optional) Editor/OS stuff
 .vscode/
 .idea/
 .DS_Store
+
 

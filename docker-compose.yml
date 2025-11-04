@@ -1,0 +1,22 @@
+services:
+  pdf-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pdf-server:latest
+    container_name: pdf-server
+    volumes:
+      - ./oci-key.pem:/app/oci-key.pem:ro
+    env_file:
+      - .env
+    environment:
+      - RUST_LOG=info
+      - APP_PORT=8080
+    ports:
+      - "${APP_PORT}:${APP_PORT}" 
+    restart: unless-stopped
+    logging: 
+      options: 
+        max-size: 10m
+        max-file: "3"
+    command: ["./pdf-server", "--port", "${APP_PORT}"]
